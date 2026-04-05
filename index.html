@@ -73,25 +73,18 @@ const REPO='docs';
 const BRANCH='main';
 const DOCS_PATH='docs';
 
-// Supported file extensions to display
-const SUPPORTED=['pdf','jpg','jpeg','png','gif','webp','svg','doc','docx','xls','xlsx','csv','txt','mp4'];
-
 let allDocs=[];
 
 function getFileType(name){
   const ext=name.split('.').pop().toLowerCase();
-  if(ext==='pdf')return'pdf';
+  if(['pdf'].includes(ext))return'pdf';
   if(['jpg','jpeg','png','gif','webp','svg'].includes(ext))return'img';
-  if(['doc','docx'].includes(ext))return'word';
-  if(['xls','xlsx','csv'].includes(ext))return'sheet';
   return'file';
 }
 
 function getIcon(type){
   if(type==='pdf')return'📄';
   if(type==='img')return'🖼';
-  if(type==='word')return'📝';
-  if(type==='sheet')return'📊';
   return'📎';
 }
 
@@ -108,6 +101,7 @@ function getIconClass(type){
 }
 
 function formatName(name){
+  // Remove extension, replace hyphens/underscores with spaces
   return name.replace(/\.[^.]+$/,'').replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
 }
 
@@ -121,35 +115,18 @@ function formatSize(bytes){
 async function fetchTree(){
   const url=`https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`;
   const res=await fetch(url,{headers:{'Accept':'application/vnd.github.v3+json'}});
-  if(!res.ok)throw new Error('GitHub API error: '+res.status+'. Make sure the repo is public.');
+  if(!res.ok)throw new Error('GitHub API error: '+res.status);
   const data=await res.json();
-  // Get all blobs inside the docs/ folder, skip hidden files and non-supported types
-  return data.tree.filter(f=>{
-    if(f.type!=='blob')return false;
-    // Must be inside docs/ folder
-    if(!f.path.startsWith(DOCS_PATH+'/'))return false;
-    const name=f.path.split('/').pop();
-    // Skip hidden files and README
-    if(name.startsWith('.'))return false;
-    if(name.toLowerCase()==='readme.md'||name.toLowerCase()==='placeholder.txt')return false;
-    // Must have a supported extension
-    const ext=name.split('.').pop().toLowerCase();
-    return SUPPORTED.includes(ext);
-  });
+  return data.tree.filter(f=>f.type==='blob'&&f.path.startsWith(DOCS_PATH+'/')&&!f.path.split('/').pop().startsWith('.'));
 }
 
 function pathToCategory(path){
-  // Remove leading "docs/" prefix
-  const stripped=path.replace(DOCS_PATH+'/','');
-  const parts=stripped.split('/');
-  // If file is directly in docs/ root, category = "General"
+  const parts=path.replace(DOCS_PATH+'/','').split('/');
   if(parts.length===1)return'General';
-  // Otherwise category = subfolder name(s)
   return parts.slice(0,-1).map(p=>p.replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase())).join(' / ');
 }
 
 function buildFileUrl(path){
-  // Direct GitHub Pages URL to the file
   return`https://${OWNER}.github.io/${REPO}/${path}`;
 }
 
@@ -158,7 +135,7 @@ async function loadDocs(){
   try{
     const files=await fetchTree();
     if(!files.length){
-      el.innerHTML=`<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-title">No documents found</div>Upload PDFs or images to the <strong>docs/</strong> folder in your GitHub repo. Supported: PDF, JPG, PNG, DOCX, XLSX.</div>`;
+      el.innerHTML=`<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-title">No documents yet</div>Upload files to the /docs folder in your GitHub repo and they will appear here automatically.</div>`;
       return;
     }
     allDocs=files.map(f=>{
@@ -170,7 +147,7 @@ async function loadDocs(){
     }).sort((a,b)=>a.category.localeCompare(b.category)||a.displayName.localeCompare(b.displayName));
     renderDocs(allDocs);
   }catch(e){
-    el.innerHTML=`<div class="error-banner">Could not load documents. Check your connection and try again.<br><small>${e.message}</small></div>`;
+    el.innerHTML=`<div class="error-banner">Could not load documents. Check your connection and try again.<br><small>${e.message}</small></div><div class="empty-state"><div class="empty-icon">📂</div><div class="empty-title">No documents loaded</div>Make sure the repository is public and the /docs folder exists.</div>`;
   }
 }
 
@@ -183,17 +160,63 @@ function renderDocs(docs){
   Object.keys(grouped).sort().forEach(cat=>{
     html+=`<div class="section-label">${cat}</div>`;
     grouped[cat].forEach(d=>{
-      html+=`<a class="doc-card" href="${d.url}" target="_blank">
+      html+=`<div class="doc-card" onclick="openDoc('${encodeURIComponent(d.url)}','${encodeURIComponent(d.displayName)}','${d.type}')">
         <div class="doc-icon ${getIconClass(d.type)}">${getIcon(d.type)}</div>
         <div class="doc-info">
           <div class="doc-name">${d.displayName}<span class="badge ${getBadgeClass(d.type)}">${d.type.toUpperCase()}</span></div>
           <div class="doc-meta">${d.category}${d.size?' · '+formatSize(d.size):''}</div>
         </div>
         <span class="doc-arrow">›</span>
-      </a>`;
+      </div>`;
     });
   });
   el.innerHTML=html;
+}
+
+function openDoc(encodedUrl, encodedName, type){
+  const url=decodeURIComponent(encodedUrl);
+  const name=decodeURIComponent(encodedName);
+  // For images show inline viewer; for everything else open in new tab with action bar
+  const viewer=document.createElement('div');
+  viewer.id='doc-viewer-overlay';
+  viewer.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;flex-direction:column;';
+
+  let bodyHtml='';
+  if(type==='img'){
+    bodyHtml=`<div style="flex:1;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto;">
+      <img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;">
+    </div>`;
+  } else {
+    bodyHtml=`<div style="flex:1;overflow:hidden;">
+      <iframe src="${url}" style="width:100%;height:100%;border:none;"></iframe>
+    </div>`;
+  }
+
+  viewer.innerHTML=`
+    <div style="background:var(--bg2);border-bottom:0.5px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-shrink:0;">
+      <button onclick="closeDocViewer()" style="background:none;border:0.5px solid var(--border2);border-radius:8px;padding:6px 12px;font-size:13px;color:var(--text);font-family:inherit;cursor:pointer;">← Back</button>
+      <div style="flex:1;font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
+      <div style="display:flex;gap:8px;flex-shrink:0;">
+        <a href="${url}" download="${name}" style="background:none;border:0.5px solid var(--border2);border-radius:8px;padding:6px 12px;font-size:13px;color:var(--text);text-decoration:none;display:inline-flex;align-items:center;">↓ Download</a>
+        <button onclick="shareDoc('${url}','${name}')" style="background:var(--accent);border:none;border-radius:8px;padding:6px 12px;font-size:13px;color:white;font-family:inherit;cursor:pointer;">Share</button>
+      </div>
+    </div>
+    ${bodyHtml}`;
+
+  document.body.appendChild(viewer);
+}
+
+function closeDocViewer(){
+  const v=document.getElementById('doc-viewer-overlay');
+  if(v)v.remove();
+}
+
+function shareDoc(url, name){
+  if(navigator.share){
+    navigator.share({title:name,url:url}).catch(()=>{});
+  } else {
+    navigator.clipboard.writeText(url).then(()=>alert('Link copied to clipboard')).catch(()=>alert('Copy this link: '+url));
+  }
 }
 
 function filterDocs(){
